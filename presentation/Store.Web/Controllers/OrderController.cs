@@ -1,6 +1,9 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Store.Web.Models;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Store.Web.Controllers
 {
@@ -8,14 +11,18 @@ namespace Store.Web.Controllers
     {
         private readonly IBookRepository bookRepository;
         private readonly IOrderRepository orderRepository;
+        private readonly INotificationService notificationService;
 
         public OrderController(IBookRepository bookRepository,
-                              IOrderRepository orderRepository)
+                               IOrderRepository orderRepository,
+                               INotificationService notificationService)
         {
             this.bookRepository = bookRepository;
             this.orderRepository = orderRepository;
+            this.notificationService = notificationService;
         }
 
+        [HttpGet]
         public IActionResult Index()
         {
             if (HttpContext.Session.TryGetCart(out Cart cart))
@@ -52,6 +59,7 @@ namespace Store.Web.Controllers
             };
         }
 
+        [HttpPost]
         public IActionResult AddItem(int bookId, int count = 1)
         {
             (Order order, Cart cart) = GetOrCreateOrderAndCart();
@@ -74,7 +82,7 @@ namespace Store.Web.Controllers
 
             SaveOrderAndCart(order, cart);
 
-            return RedirectToAction("Index", "Book", new { bookId });
+            return RedirectToAction("Index", "Order");
         }
 
         private (Order order, Cart cart) GetOrCreateOrderAndCart()
@@ -103,15 +111,90 @@ namespace Store.Web.Controllers
             HttpContext.Session.Set(cart);
         }
 
-        public IActionResult RemoveItem(int id)
+        [HttpPost]
+        public IActionResult RemoveItem(int bookId)
         {
             (Order order, Cart cart) = GetOrCreateOrderAndCart();
 
-            order.RemoveItem(id);
+            order.RemoveItem(bookId);
 
             SaveOrderAndCart(order, cart);
 
-            return RedirectToAction("Index", "Book", new { id });
+            return RedirectToAction("Index", "Order");
+        }
+
+        [HttpPost]
+        public IActionResult SendConfirmationCode(int id, string cellPhone)
+        {
+            var order = orderRepository.GetById(id);
+            var model = Map(order);
+
+            if(!IsValidCellPhone(cellPhone))
+            {
+                model.Errors["cellPhone"] = "Номер телефона не соответсвует";
+                return View("Index", model);
+            }
+
+            int code = 1111; // random.Next(1000, 10000)
+            HttpContext.Session.SetInt32(cellPhone, code);
+            notificationService.SendConfirmationCode(cellPhone, code);
+
+            return View("Confirmation", 
+                        new ConfirmationModel
+                        {
+                            OrderId = id,
+                            CellPhone = cellPhone
+                        });
+        }
+
+        private bool IsValidCellPhone(string cellPhone)
+        {
+            if (cellPhone == null)
+                return false;
+
+            cellPhone = cellPhone.Replace(" ", "")
+                                 .Replace("-", "");
+
+            return Regex.IsMatch(cellPhone, @"^\+?\d{11}$");
+        }
+
+        [HttpPost]
+        public IActionResult StartDelivery(int id, string cellPhone, int code)
+        {
+            int? storedCode = HttpContext.Session.GetInt32(cellPhone);
+            if(storedCode == null)
+            {
+                return View("Confirmation",
+                        new ConfirmationModel
+                        {
+                            OrderId = id,
+                            CellPhone = cellPhone,
+                            Errors = new Dictionary<string, string>
+                            {
+                                { "code", "Пустой код, повторить отправку" }
+                            },
+
+                        });
+            }
+
+            if (storedCode != code)
+            {
+                return View("Confirmation",
+                        new ConfirmationModel
+                        {
+                            OrderId = id,
+                            CellPhone = cellPhone,
+                            Errors = new Dictionary<string, string>
+                            {
+                                { "code", "Неверный код." }
+                            },
+
+                        });
+            }
+
+            //
+
+            return View();
         }
     }
 }
